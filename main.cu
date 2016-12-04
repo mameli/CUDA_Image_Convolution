@@ -33,37 +33,56 @@ static void CheckCudaErrorAux(const char *file, unsigned line,
 #define w (TILE_WIDTH + Mask_width - 1)
 #define clamp(x) (min(max((x), 0.0), 1.0))
 
-// TODO INSERT CODE HERE
 __global__ void convolution(float *I, const float *__restrict__ M, float *P,
 		int channels, int width, int height) {
-			int maskWidth = 5;
-		 	int maskRadius = maskWidth / 2;
-		 	int xOffset, yOffset;
-		 	float accum = 0.0;
-		 	int i = blockIdx.y * blockDim.y + threadIdx.y;
-		 	int j = blockIdx.x * blockDim.x + threadIdx.x;
-			int x,y;
-			for (int k = 0; k < channels; k++) {
-				for (y = 0; y < Mask_width; y++){
-					for (x = 0; x < Mask_width; x++){
-						yOffset = i+y;
-						xOffset = j+x;
-						if (xOffset >= 0
-								&& xOffset < width
-								&& yOffset >= 0
-								&& yOffset < height) {
-	          	float imagePixel = I[(yOffset * width + xOffset) * channels + k];
-	          	float maskValue = M[(y+maskRadius)*maskWidth+x+maskRadius];
-	          	accum += imagePixel * maskValue;
-	          }
-					}
+	__shared__ float N_ds[w][w];
+	int k;
+	for (k = 0; k < channels; k++) {
+		// First batch loading
+		int dest = threadIdx.y * TILE_WIDTH + threadIdx.x;
+		int destY = dest / w;
+		int destX = dest % w;
+		int srcY = blockIdx.y * TILE_WIDTH + destY - Mask_radius;
+		int srcX = blockIdx.x * TILE_WIDTH + destX - Mask_radius;
+		int src = (srcY * width + srcX) * channels + k;
+		if (srcY >= 0 && srcY < height && srcX >= 0 && srcX < width) {
+			N_ds[destY][destX] = I[src];
+		} else {
+			N_ds[destY][destX] = 0;
+		}
 
-				if (y < height && x < width)
-					P[(y * width + x) * channels + k] = clamp(accum);
-				}
+		// Second batch loading
+		dest = threadIdx.y * TILE_WIDTH + threadIdx.x + TILE_WIDTH * TILE_WIDTH;
+		destY = dest / w;
+		destX = dest % w;
+		srcY = blockIdx.y * TILE_WIDTH + destY - Mask_radius;
+		srcX = blockIdx.x * TILE_WIDTH + destX - Mask_radius;
+		src = (srcY * width + srcX) * channels + k;
+		if (destY < w) {
+			if (srcY >= 0 && srcY < height && srcX >= 0 && srcX < width) {
+				N_ds[destY][destX] = I[src];
+			} else {
+				N_ds[destY][destX] = 0;
 			}
+		}
+		__syncthreads();
 
+		float accum = 0;
+		int y, x;
+		for (y = 0; y < Mask_width; y++) {
+			for (x = 0; x < Mask_width; x++) {
+				accum += N_ds[threadIdx.y + y][threadIdx.x + x]
+						* M[y * Mask_width + x];
+			}
+		}
+		y = blockIdx.y * TILE_WIDTH + threadIdx.y;
+		x = blockIdx.x * TILE_WIDTH + threadIdx.x;
+		if (y < height && x < width)
+			P[(y * width + x) * channels + k] = clamp(accum);
+		__syncthreads();
+	}
 }
+
 
 // simple test to read/write PPM images, and process Image_t data
 void test_images() {
@@ -77,9 +96,9 @@ void test_images() {
 	Image_t* newImg = PPM_import("test_output.ppm");
 	inputImg = PPM_import("computer_programming.ppm");
 	if (Image_is_same(inputImg, newImg))
-		printf("Img uguali\n");
+		printf("Same images\n");
 	else
-		printf("Img diverse\n");
+		printf("Different images\n");
 }
 
 int main() {
