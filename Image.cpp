@@ -2,6 +2,7 @@
 #include "Utils.h"
 #include <iostream>
 #include <cassert>
+#include <stdlib.h>
 
 Image_t* Image_new(int width, int height, int channels, float *data) {
 	Image_t* img;
